@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>출석 체크</title>
+    <meta name="description" content="학생 출석을 관리하는 앱">
+    <meta name="theme-color" content="#3B82F6">
+    <link rel="manifest" href="data:application/json;charset=utf-8,{%22name%22:%22출석%20체크%20앱%22,%22short_name%22:%22출석체크%22,%22description%22:%22학생%20출석을%20관리하는%20앱%22,%22start_url%22:%22/%22,%22display%22:%22standalone%22,%22background_color%22:%22%23DBEAFE%22,%22theme_color%22:%22%233B82F6%22,%22icons%22:[{%22src%22:%22https://cdn-icons-png.flaticon.com/512/3135/3135715.png%22,%22sizes%22:%22192x192%22,%22type%22:%22image/png%22},{%22src%22:%22https://cdn-icons-png.flaticon.com/512/3135/3135715.png%22,%22sizes%22:%22512x512%22,%22type%22:%22image/png%22}]}">
+    <link rel="icon" href="https://cdn-icons-png.flaticon.com/512/3135/3135715.png">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3135/3135715.png">
+    
+    <!-- iOS 메타 태그 -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="출석체크">
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        /* PWA 설치 프롬프트 스타일 */
+        .install-prompt {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #3B82F6;
+            color: white;
+            padding: 12px 24px;
+            border-radius: 25px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+            z-index: 1000;
+            display: none;
+            animation: slideUp 0.3s ease-out;
+        }
+        
+        @keyframes slideUp {
+            from { transform: translate(-50%, 100px); opacity: 0; }
+            to { transform: translate(-50%, 0); opacity: 1; }
+        }
+        
+        /* 오프라인 표시 */
+        .offline-indicator {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #EF4444;
+            color: white;
+            text-align: center;
+            padding: 8px;
+            z-index: 1000;
+            display: none;
+        }
+        
+        /* 반응형 개선 */
+        @media (max-width: 640px) {
+            .student-grid {
+                grid-template-columns: repeat(3, 1fr);
+            }
+        }
+        
+        @media (min-width: 641px) and (max-width: 768px) {
+            .student-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+        
+        @media (min-width: 769px) {
+            .student-grid {
+                grid-template-columns: repeat(6, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 오프라인 표시 -->
+    <div id="offline-indicator" class="offline-indicator">
+        📡 오프라인 모드입니다
+    </div>
+    
+    <!-- PWA 설치 프롬프트 -->
+    <div id="install-prompt" class="install-prompt">
+        <span>📱 홈 화면에 추가하시겠습니까?</span>
+        <button id="install-btn" class="ml-3 bg-white text-blue-600 px-3 py-1 rounded-full text-sm font-semibold">설치</button>
+        <button id="dismiss-btn" class="ml-2 text-blue-200 text-sm">나중에</button>
+    </div>
+
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+        const { Check, X, Clock, Wifi, WifiOff } = lucide;
+
+        const AttendanceChecker = () => {
+            // 학생 번호 배열 생성 (1-8, 10-25)
+            const studentNumbers = [
+                ...Array.from({length: 8}, (_, i) => i + 1),
+                ...Array.from({length: 16}, (_, i) => i + 10)
+            ];
+
+            // localStorage에서 데이터 로드 (PWA에서는 메모리 저장소 사용)
+            const loadFromStorage = (key, defaultValue) => {
+                try {
+                    const saved = window.attendanceData?.[key];
+                    return saved ? JSON.parse(saved) : defaultValue;
+                } catch {
+                    return defaultValue;
+                }
+            };
+
+            const saveToStorage = (key, value) => {
+                try {
+                    if (!window.attendanceData) window.attendanceData = {};
+                    window.attendanceData[key] = JSON.stringify(value);
+                } catch (e) {
+                    console.log('저장 실패:', e);
+                }
+            };
+
+            // 출석 상태 초기화
+            const initializeAttendance = () => {
+                const initial = {};
+                studentNumbers.forEach(num => {
+                    initial[num] = 'unchecked';
+                });
+                return initial;
+            };
+
+            const [attendance, setAttendance] = useState(() => 
+                loadFromStorage('attendance', initializeAttendance())
+            );
+            
+            const [lateTime, setLateTime] = useState(() => 
+                loadFromStorage('lateTime', {})
+            );
+            
+            const [showTimeModal, setShowTimeModal] = useState(false);
+            const [selectedStudent, setSelectedStudent] = useState(null);
+            const [currentDate] = useState(new Date().toLocaleDateString('ko-KR'));
+            const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+            // 온라인/오프라인 상태 감지
+            useEffect(() => {
+                const handleOnline = () => {
+                    setIsOnline(true);
+                    document.getElementById('offline-indicator').style.display = 'none';
+                };
+                
+                const handleOffline = () => {
+                    setIsOnline(false);
+                    document.getElementById('offline-indicator').style.display = 'block';
+                };
+
+                window.addEventListener('online', handleOnline);
+                window.addEventListener('offline', handleOffline);
+
+                // 초기 상태 설정
+                if (!navigator.onLine) {
+                    handleOffline();
+                }
+
+                return () => {
+                    window.removeEventListener('online', handleOnline);
+                    window.removeEventListener('offline', handleOffline);
+                };
+            }, []);
+
+            // 데이터 저장
+            useEffect(() => {
+                saveToStorage('attendance', attendance);
+            }, [attendance]);
+
+            useEffect(() => {
+                saveToStorage('lateTime', lateTime);
+            }, [lateTime]);
+
+            const toggleAttendance = (studentNum) => {
+                setAttendance(prev => {
+                    const current = prev[studentNum];
+                    let next;
+                    
+                    switch(current) {
+                        case 'unchecked': next = 'present'; break;
+                        case 'present': 
+                            setSelectedStudent(studentNum);
+                            setShowTimeModal(true);
+                            return prev;
+                        case 'late': next = 'absent'; break;
+                        case 'absent': next = 'unchecked'; break;
+                        default: next = 'unchecked';
+                    }
+                    
+                    return { ...prev, [studentNum]: next };
+                });
+            };
+
+            const setLateTimeForStudent = (time) => {
+                if (selectedStudent && time) {
+                    setAttendance(prev => ({ ...prev, [selectedStudent]: 'late' }));
+                    setLateTime(prev => ({ ...prev, [selectedStudent]: time }));
+                }
+                setShowTimeModal(false);
+                setSelectedStudent(null);
+            };
+
+            const getStatusStyle = (status) => {
+                switch(status) {
+                    case 'present': 
+                        return {
+                            bg: 'bg-green-100 border-green-300',
+                            text: 'text-green-800',
+                            icon: React.createElement(Check, { className: "w-5 h-5" }),
+                            label: '출석'
+                        };
+                    case 'late':
+                        return {
+                            bg: 'bg-yellow-100 border-yellow-300',
+                            text: 'text-yellow-800',
+                            icon: React.createElement(Clock, { className: "w-5 h-5" }),
+                            label: '지각'
+                        };
+                    case 'absent':
+                        return {
+                            bg: 'bg-red-100 border-red-300',
+                            text: 'text-red-800',
+                            icon: React.createElement(X, { className: "w-5 h-5" }),
+                            label: '결석'
+                        };
+                    default:
+                        return {
+                            bg: 'bg-gray-100 border-gray-300',
+                            text: 'text-gray-600',
+                            icon: null,
+                            label: '미체크'
+                        };
+                }
+            };
+
+            const stats = {
+                present: Object.values(attendance).filter(s => s === 'present').length,
+                late: Object.values(attendance).filter(s => s === 'late').length,
+                absent: Object.values(attendance).filter(s => s === 'absent').length,
+                unchecked: Object.values(attendance).filter(s => s === 'unchecked').length
+            };
+
+            const resetAll = () => {
+                const reset = initializeAttendance();
+                setAttendance(reset);
+                setLateTime({});
+            };
+
+            const TimeInputModal = () => {
+                const [inputTime, setInputTime] = useState('');
+
+                const handleConfirm = () => {
+                    setLateTimeForStudent(inputTime.trim() || '시간미입력');
+                    setInputTime('');
+                };
+
+                const handleCancel = () => {
+                    setShowTimeModal(false);
+                    setSelectedStudent(null);
+                    setInputTime('');
+                };
+
+                if (!showTimeModal) return null;
+
+                return (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                        <div className="bg-white rounded-lg p-6 w-full max-w-sm">
+                            <h3 className="text-lg font-semibold text-gray-800 mb-4">
+                                {selectedStudent}번 학생 지각 시간 입력
+                            </h3>
+                            <div>
+                                <input
+                                    type="time"
+                                    value={inputTime}
+                                    onChange={(e) => setInputTime(e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg mb-4 text-center text-lg"
+                                    autoFocus
+                                />
+                                <div className="text-xs text-gray-500 mb-4 text-center">
+                                    시간을 입력하지 않아도 지각 처리됩니다
+                                </div>
+                                <div className="flex gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={handleCancel}
+                                        className="flex-1 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                                    >
+                                        취소
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleConfirm}
+                                        className="flex-1 px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors"
+                                    >
+                                        확인
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            };
+
+            return (
+                <div className="min-h-screen bg-blue-50 p-4">
+                    <div className="max-w-4xl mx-auto">
+                        {/* 헤더 */}
+                        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+                            <div className="flex items-center justify-between mb-2">
+                                <h1 className="text-2xl font-bold text-gray-800">출석 체크</h1>
+                                <div className="flex items-center">
+                                    {isOnline ? 
+                                        React.createElement(Wifi, { className: "w-5 h-5 text-green-600" }) :
+                                        React.createElement(WifiOff, { className: "w-5 h-5 text-red-600" })
+                                    }
+                                </div>
+                            </div>
+                            <p className="text-gray-600">{currentDate}</p>
+                            
+                            {/* 통계 */}
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                                <div className="bg-green-50 p-3 rounded-lg text-center">
+                                    <div className="text-lg font-bold text-green-800">{stats.present}</div>
+                                    <div className="text-sm text-green-600">출석</div>
+                                </div>
+                                <div className="bg-yellow-50 p-3 rounded-lg text-center">
+                                    <div className="text-lg font-bold text-yellow-800">{stats.late}</div>
+                                    <div className="text-sm text-yellow-600">지각</div>
+                                </div>
+                                <div className="bg-red-50 p-3 rounded-lg text-center">
+                                    <div className="text-lg font-bold text-red-800">{stats.absent}</div>
+                                    <div className="text-sm text-red-600">결석</div>
+                                </div>
+                                <div className="bg-gray-50 p-3 rounded-lg text-center">
+                                    <div className="text-lg font-bold text-gray-800">{stats.unchecked}</div>
+                                    <div className="text-sm text-gray-600">미체크</div>
+                                </div>
+                            </div>
+                            
+                            {/* 초기화 버튼 */}
+                            <button
+                                onClick={resetAll}
+                                className="mt-4 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors w-full md:w-auto"
+                            >
+                                전체 초기화
+                            </button>
+                        </div>
+
+                        {/* 출석부 */}
+                        <div className="bg-white rounded-lg shadow-md p-6">
+                            <h2 className="text-xl font-semibold text-gray-800 mb-4">학생 명단 (총 24명)</h2>
+                            
+                            {/* 사용법 안내 */}
+                            <div className="bg-blue-50 p-3 rounded-lg mb-4 text-sm text-blue-800">
+                                💡 학생 번호를 터치하여 출석 상태를 변경하세요: 미체크 → 출석 → 지각(시간입력) → 결석 → 미체크
+                            </div>
+                            
+                            {/* 학생 목록 */}
+                            <div className="student-grid grid gap-3">
+                                {studentNumbers.map(num => {
+                                    const status = getStatusStyle(attendance[num]);
+                                    const studentLateTime = lateTime[num] || '';
+                                    
+                                    return (
+                                        <button
+                                            key={num}
+                                            onClick={() => toggleAttendance(num)}
+                                            className={`${status.bg} ${status.text} border-2 ${status.bg.replace('bg-', 'border-').replace('-100', '-300')} 
+                                                rounded-lg p-4 hover:opacity-80 transition-all duration-200 transform active:scale-95 touch-manipulation`}
+                                        >
+                                            <div className="text-lg font-bold mb-1">{num}번</div>
+                                            <div className="flex items-center justify-center mb-1">
+                                                {status.icon}
+                                            </div>
+                                            <div className="text-xs">{status.label}</div>
+                                            {attendance[num] === 'late' && studentLateTime && (
+                                                <div className="text-xs font-semibold mt-1 text-yellow-900">
+                                                    {studentLateTime}
+                                                </div>
+                                            )}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <TimeInputModal />
+
+                        {/* 범례 */}
+                        <div className="bg-white rounded-lg shadow-md p-4 mt-4">
+                            <h3 className="text-lg font-semibold text-gray-800 mb-3">상태 범례</h3>
+                            <div className="grid grid-cols-2 md:flex md:flex-wrap gap-4">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-green-100 border border-green-300 rounded"></div>
+                                    <span className="text-sm">출석</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-yellow-100 border border-yellow-300 rounded"></div>
+                                    <span className="text-sm">지각</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-red-100 border border-red-300 rounded"></div>
+                                    <span className="text-sm">결석</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-4 h-4 bg-gray-100 border border-gray-300 rounded"></div>
+                                    <span className="text-sm">미체크</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* PWA 정보 */}
+                        <div className="bg-white rounded-lg shadow-md p-4 mt-4">
+                            <h3 className="text-lg font-semibold text-gray-800 mb-2">📱 앱으로 설치하기</h3>
+                            <p className="text-sm text-gray-600 mb-2">
+                                이 앱을 홈 화면에 추가하면 네이티브 앱처럼 사용할 수 있습니다.
+                            </p>
+                            <div className="text-xs text-gray-500">
+                                <strong>iOS:</strong> 공유 버튼 → "홈 화면에 추가"<br/>
+                                <strong>Android:</strong> 메뉴 → "홈 화면에 추가" 또는 상단 설치 알림 확인
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // PWA 기능
+        let deferredPrompt;
+
+        // PWA 설치 프롬프트 처리
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('install-prompt').style.display = 'block';
+        });
+
+        // 설치 버튼 클릭
+        document.getElementById('install-btn').addEventListener('click', async () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                deferredPrompt = null;
+                document.getElementById('install-prompt').style.display = 'none';
+            }
+        });
+
+        // 나중에 버튼 클릭
+        document.getElementById('dismiss-btn').addEventListener('click', () => {
+            document.getElementById('install-prompt').style.display = 'none';
+        });
+
+        // 서비스 워커 등록
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                const swScript = `
+                    const CACHE_NAME = 'attendance-v1';
+                    const urlsToCache = [
+                        '/',
+                        'https://cdn.tailwindcss.com',
+                        'https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js',
+                        'https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js',
+                        'https://unpkg.com/@babel/standalone/babel.min.js',
+                        'https://unpkg.com/lucide@latest/dist/umd/lucide.js'
+                    ];
+
+                    self.addEventListener('install', (event) => {
+                        event.waitUntil(
+                            caches.open(CACHE_NAME)
+                                .then((cache) => cache.addAll(urlsToCache))
+                        );
+                    });
+
+                    self.addEventListener('fetch', (event) => {
+                        event.respondWith(
+                            caches.match(event.request)
+                                .then((response) => {
+                                    if (response) {
+                                        return response;
+                                    }
+                                    return fetch(event.request);
+                                })
+                        );
+                    });
+                `;
+
+                const blob = new Blob([swScript], { type: 'application/javascript' });
+                const swUrl = URL.createObjectURL(blob);
+
+                navigator.serviceWorker.register(swUrl)
+                    .then((registration) => {
+                        console.log('Service Worker 등록 성공:', registration);
+                    })
+                    .catch((error) => {
+                        console.log('Service Worker 등록 실패:', error);
+                    });
+            });
+        }
+
+        // React 앱 렌더링
+        ReactDOM.render(React.createElement(AttendanceChecker), document.getElementById('root'));
+    </script>
+</body>
+</html>
